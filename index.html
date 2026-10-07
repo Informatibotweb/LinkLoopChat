@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LinkLoopChat</title>
+  <style>
+    :root {
+      --bg: #0b0b0f;
+      --card: rgba(255,255,255,0.06);
+      --border: rgba(255,255,255,0.1);
+      --text: #f5f5f7;
+      --text2: #a1a1a6;
+      --accent: #0a84ff;
+      --accent2: #5e5ce6;
+      --success: #30d158;
+      --danger: #ff453a;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ========== AUTH ========== */
+    #auth-screen {
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: radial-gradient(circle at top left, #1a1a2e, #0b0b0f);
+    }
+
+    .auth-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(20px);
+      border-radius: 20px;
+      padding: 40px 32px;
+      width: 100%;
+      max-width: 400px;
+    }
+
+    .auth-card h1 {
+      text-align: center;
+      font-size: 28px;
+      margin-bottom: 6px;
+    }
+
+    .auth-card .subtitle {
+      text-align: center;
+      color: var(--text2);
+      font-size: 14px;
+      margin-bottom: 30px;
+    }
+
+    .tabs {
+      display: flex;
+      background: rgba(255,255,255,0.05);
+      border-radius: 12px;
+      padding: 4px;
+      margin-bottom: 24px;
+    }
+
+    .tab {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      background: transparent;
+      color: var(--text2);
+      font-weight: 600;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .tab.active {
+      background: var(--accent);
+      color: white;
+    }
+
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 13px; color: var(--text2); margin-bottom: 6px; }
+
+    input {
+      width: 100%;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 13px 15px;
+      color: var(--text);
+      font-size: 15px;
+      outline: none;
+    }
+
+    input:focus { border-color: var(--accent); }
+
+    .btn-primary {
+      width: 100%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .message {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 10px;
+      font-size: 14px;
+      text-align: center;
+      display: none;
+    }
+    .message.success { background: rgba(48,209,88,0.15); color: var(--success); display: block; }
+    .message.error { background: rgba(255,69,58,0.15); color: var(--danger); display: block; }
+
+    .hidden { display: none !important; }
+
+    /* ========== CHAT ========== */
+    #chat-screen {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-header {
+      background: rgba(20,20,25,0.9);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      backdrop-filter: blur(10px);
+    }
+
+    .chat-header h1 {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .user-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      color: var(--text2);
+    }
+
+    .logout-btn {
+      background: rgba(255,69,58,0.15);
+      color: var(--danger);
+      border: none;
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .messages-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .message-bubble {
+      max-width: 75%;
+      padding: 12px 16px;
+      border-radius: 16px;
+      font-size: 15px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .message-bubble.mine {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+
+    .message-bubble.other {
+      background: var(--card);
+      border: 1px solid var(--border);
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+    }
+
+    .message-meta {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-bottom: 4px;
+    }
+
+    .input-area {
+      background: rgba(20,20,25,0.95);
+      border-top: 1px solid var(--border);
+      padding: 14px 16px;
+      display: flex;
+      gap: 10px;
+    }
+
+    .input-area input {
+      flex: 1;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 13px 16px;
+      color: var(--text);
+      font-size: 15px;
+      outline: none;
+    }
+
+    .send-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 0 20px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .empty-chat {
+      text-align: center;
+      color: var(--text2);
+      margin-top: 40px;
+      font-size: 15px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ==================== SCHERMATA AUTH ==================== -->
+  <div id="auth-screen">
+    <div class="auth-card">
+      <h1>LinkLoopChat</h1>
+      <p class="subtitle">Messaggia in tempo reale</p>
+
+      <div class="tabs">
+        <button class="tab active" onclick="mostraTab('login')">Accedi</button>
+        <button class="tab" onclick="mostraTab('register')">Registrati</button>
+      </div>
+
+      <!-- LOGIN -->
+      <form id="loginForm" onsubmit="login(event)">
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" id="login-username" required placeholder="Il tuo username">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="login-password" required placeholder="Password">
+        </div>
+        <button type="submit" class="btn-primary" id="loginBtn">Accedi</button>
+      </form>
+
+      <!-- REGISTRAZIONE -->
+      <form id="registerForm" class="hidden" onsubmit="registra(event)">
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" id="reg-username" required placeholder="Scegli uno username">
+        </div>
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" id="reg-email" required placeholder="Email">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="reg-password" required minlength="4" placeholder="Password">
+        </div>
+        <button type="submit" class="btn-primary" id="regBtn">Registrati</button>
+      </form>
+
+      <div id="auth-message" class="message"></div>
+    </div>
+  </div>
+
+  <!-- ==================== SCHERMATA CHAT ==================== -->
+  <div id="chat-screen" class="hidden">
+    <div class="chat-header">
+      <h1>LinkLoopChat</h1>
+      <div class="user-info">
+        <span id="current-user"></span>
+        <button class="logout-btn" onclick="logout()">Esci</button>
+      </div>
+    </div>
+
+    <div class="messages-area" id="messages-area">
+      <div class="empty-chat">Nessun messaggio ancora. Scrivi il primo!</div>
+    </div>
+
+    <div class="input-area">
+      <input type="text" id="message-input" placeholder="Scrivi un messaggio..." autocomplete="off">
+      <button class="send-btn" onclick="inviaMessaggio()">Invia</button>
+    </div>
+  </div>
+
+  <script>
+    // ====================== CONFIGURAZIONE ======================
+    const API_BASE = "https://mosaically-aryepiglottic-river.ngrok-free.dev/api/prova";
+    const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" };
+    // ===========================================================
+
+    let utenteLoggato = null;
+    let pollingInterval = null;
+
+    // ---------- AUTH ----------
+    function mostraTab(tab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.getElementById('loginForm').classList.add('hidden');
+      document.getElementById('registerForm').classList.add('hidden');
+      document.getElementById('auth-message').className = 'message';
+
+      if (tab === 'login') {
+        document.querySelectorAll('.tab')[0].classList.add('active');
+        document.getElementById('loginForm').classList.remove('hidden');
+      } else {
+        document.querySelectorAll('.tab')[1].classList.add('active');
+        document.getElementById('registerForm').classList.remove('hidden');
+      }
+    }
+
+    function mostraMessaggio(testo, tipo) {
+      const el = document.getElementById('auth-message');
+      el.innerText = testo;
+      el.className = 'message ' + tipo;
+    }
+
+    async function getUsers() {
+      try {
+        const res = await fetch(`${API_BASE}/file/users.json`, { headers: NGROK_HEADERS });
+        if (!res.ok) return [];
+        return await res.json();
+      } catch {
+        return [];
+      }
+    }
+
+    async function salvaUsers(users) {
+      const blob = new Blob([JSON.stringify(users, null, 2)], { type: 'application/json' });
+      const formData = new FormData();
+      formData.append('file', blob, 'users.json');
+      formData.append('uploader', 'linkloopchat');
+
+      const res = await fetch(`${API_BASE}/upload`, {
+        method: 'POST',
+        headers: NGROK_HEADERS,
+        body: formData
+      });
+      return res.ok;
+    }
+
+    async function registra(e) {
+      e.preventDefault();
+      const btn = document.getElementById('regBtn');
+      btn.disabled = true;
+      btn.innerText = 'Registrazione...';
+
+      const username = document.getElementById('reg-username').value.trim().toLowerCase();
+      const email = document.getElementById('reg-email').value.trim();
+      const password = document.getElementById('reg-password').value;
+
+      try {
+        let users = await getUsers();
+        if (users.find(u => u.username === username)) {
+          mostraMessaggio('Username già in uso', 'error');
+          btn.disabled = false;
+          btn.innerText = 'Registrati';
+          return;
+        }
+
+        users.push({
+          id: users.length ? Math.max(...users.map(u => u.id)) + 1 : 1,
+          username,
+          email,
+          password,
+          created_at: new Date().toISOString()
+        });
+
+        if (await salvaUsers(users)) {
+          mostraMessaggio('Registrazione completata!', 'success');
+          document.getElementById('registerForm').reset();
+          setTimeout(() => mostraTab('login'), 1200);
+        } else {
+          mostraMessaggio('Errore durante il salvataggio', 'error');
+        }
+      } catch {
+        mostraMessaggio('Errore di connessione', 'error');
+      }
+
+      btn.disabled = false;
+      btn.innerText = 'Registrati';
+    }
+
+    async function login(e) {
+      e.preventDefault();
+      const btn = document.getElementById('loginBtn');
+      btn.disabled = true;
+      btn.innerText = 'Accesso...';
+
+      const username = document.getElementById('login-username').value.trim().toLowerCase();
+      const password = document.getElementById('login-password').value;
+
+      try {
+        const users = await getUsers();
+        const utente = users.find(u => u.username === username && u.password === password);
+
+        if (utente) {
+          utenteLoggato = {
+            id: utente.id,
+            username: utente.username,
+            email: utente.email
+          };
+          localStorage.setItem('linkloop_user', JSON.stringify(utenteLoggato));
+          avviaChat();
+        } else {
+          mostraMessaggio('Username o password non corretti', 'error');
+        }
+      } catch {
+        mostraMessaggio('Errore di connessione', 'error');
+      }
+
+      btn.disabled = false;
+      btn.innerText = 'Accedi';
+    }
+
+    function logout() {
+      localStorage.removeItem('linkloop_user');
+      utenteLoggato = null;
+      clearInterval(pollingInterval);
+      document.getElementById('chat-screen').classList.add('hidden');
+      document.getElementById('auth-screen').classList.remove('hidden');
+    }
+
+    // ---------- MESSAGGI ----------
+    async function getMessages() {
+      try {
+        const res = await fetch(`${API_BASE}/file/messages.json`, { headers: NGROK_HEADERS });
+        if (!res.ok) return [];
+        return await res.json();
+      } catch {
+        return [];
+      }
+    }
+
+    async function salvaMessages(messages) {
+      const blob = new Blob([JSON.stringify(messages, null, 2)], { type: 'application/json' });
+      const formData = new FormData();
+      formData.append('file', blob, 'messages.json');
+      formData.append('uploader', 'linkloopchat');
+
+      const res = await fetch(`${API_BASE}/upload`, {
+        method: 'POST',
+        headers: NGROK_HEADERS,
+        body: formData
+      });
+      return res.ok;
+    }
+
+    async function caricaMessaggi() {
+      const messages = await getMessages();
+      const area = document.getElementById('messages-area');
+
+      if (messages.length === 0) {
+        area.innerHTML = '<div class="empty-chat">Nessun messaggio ancora. Scrivi il primo!</div>';
+        return;
+      }
+
+      area.innerHTML = messages.map(msg => {
+        const isMine = msg.username === utenteLoggato.username;
+        const time = new Date(msg.timestamp).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+        return `
+          <div class="message-bubble ${isMine ? 'mine' : 'other'}">
+            ${!isMine ? `<div class="message-meta">${msg.username} • ${time}</div>` : `<div class="message-meta" style="text-align:right">${time}</div>`}
+            ${msg.text}
+          </div>
+        `;
+      }).join('');
+
+      area.scrollTop = area.scrollHeight;
+    }
+
+    async function inviaMessaggio() {
+      const input = document.getElementById('message-input');
+      const text = input.value.trim();
+      if (!text) return;
+
+      input.value = '';
+      input.focus();
+
+      const messages = await getMessages();
+      messages.push({
+        id: Date.now(),
+        username: utenteLoggato.username,
+        text: text,
+        timestamp: new Date().toISOString()
+      });
+
+      await salvaMessages(messages);
+      await caricaMessaggi();
+    }
+
+    // Invio con Invio
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('message-input')?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') inviaMessaggio();
+      });
+    });
+
+    function avviaChat() {
+      document.getElementById('auth-screen').classList.add('hidden');
+      document.getElementById('chat-screen').classList.remove('hidden');
+      document.getElementById('current-user').innerText = utenteLoggato.username;
+
+      caricaMessaggi();
+      // Aggiorna i messaggi ogni 3 secondi
+      pollingInterval = setInterval(caricaMessaggi, 3000);
+    }
+
+    // Controlla se già loggato
+    window.onload = () => {
+      const saved = localStorage.getItem('linkloop_user');
+      if (saved) {
+        utenteLoggato = JSON.parse(saved);
+        avviaChat();
+      }
+    };
+  </script>
+</body>
+</html>
