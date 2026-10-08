@@ -3053,7 +3053,7 @@
       // evento "emoji grande scoppiata" inviato dall'altro utente
       if (evBurst && typeof evBurst === 'object' && evBurst.id && evBurst.id !== ultimoBurstVisto) {
         const età = Date.now() - (Date.parse(evBurst.at) || 0);
-        if (età >= 0 && età < 20000) {
+        if (età >= 0 && età < 45000) {
           ultimoBurstVisto = evBurst.id;
           scatenaBurst(evBurst.msg, evBurst.emoji, true);
         }
