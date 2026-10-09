@@ -2058,10 +2058,11 @@
         try {
           const res = await fetch(`${base}/file/${nome}`, { headers: NGROK_HEADERS, cache: 'no-store' });
           if (res.ok) return await res.json();
-        } catch { /* il tunnel ngrok ogni tanto droppa: riprovo */ }
-        if (i < tentativi) await new Promise(r => setTimeout(r, 500 * i));
+          if (res.status === 404) return undefined;   // file inesistente: non è un errore, non ritento
+        } catch { /* il tunnel ogni tanto droppa: riprovo */ }
+        if (i < tentativi) await new Promise(r => setTimeout(r, 450 * i));
       }
-      return null;
+      return null;   // errore di rete dopo tutti i tentativi
     }
 
     async function scriviFileSu(base, nome, dati, tentativi = 1) {
@@ -2079,8 +2080,76 @@
       return false;
     }
 
-    const leggiFile = (n) => leggiFileSu(API_BASE, n, 2);
-    const scriviFile = (n, d) => scriviFileSu(API_BASE, n, d, 2);
+    const leggiFile = (n) => leggiFileSu(API_BASE, n, 3);
+    const scriviFile = (n, d) => scriviFileSu(API_BASE, n, d, 3);
+
+    // ============ MESSAGGI: SONDA + CACHE (niente download se la chat non cambia) ============
+    // Il server risponde a "Range: bytes=0-0" con 206 + etag/dimensione in ~400 byte:
+    // se non è cambiato niente si salta il download del file intero (pulizia lenta).
+    const cacheMsg = new Map();                 // keyChat -> { eta, msgs, at }
+    const cacheMsgLS = (key) => `linkloop_msgs_${utenteLoggato ? utenteLoggato.id : 'x'}_${key}`;
+    let lsMsgsDisattivo = false;
+    let lettureFallite = 0;
+
+    function salvaMsgsLS(key, msgs) {
+      if (lsMsgsDisattivo || !utenteLoggato) return;
+      try {
+        localStorage.setItem(cacheMsgLS(key), JSON.stringify({ msgs: msgs.slice(-300) }));
+      } catch { lsMsgsDisattivo = true; }   // quota esaurita: la cache di sicurezza si disattiva
+    }
+
+    function caricaMsgsLS(key) {
+      try {
+        const d = JSON.parse(localStorage.getItem(cacheMsgLS(key)) || 'null');
+        return (d && Array.isArray(d.msgs)) ? d.msgs : null;
+      } catch { return null; }
+    }
+
+    /* Lettura dei messaggi della chat: sonda da 1 byte, download solo se changed.
+       Se la rete muore restituisce l'ultima versione buona (mai schermo vuoto). */
+    async function leggiFileChat(key) {
+      const c = cacheMsg.get(key);
+      const forzato = c && (Date.now() - (c.at || 0) > 120000);   // riconciliazione di sicurezza ogni 2 min
+      let res = null;
+      try {
+        res = await fetch(`${API_BASE}/file/${key}`, {
+          headers: Object.assign({}, NGROK_HEADERS, { Range: 'bytes=0-0' }),
+          cache: 'no-store'
+        });
+      } catch { return c ? c.msgs : null; }   // rete giù: tiene l'ultima versione buona
+      if (res.status === 404) { cacheMsg.delete(key); return undefined; }
+      if (res.status === 206) {
+        const cr = res.headers.get('content-range') || '/';
+        const size = Number(cr.split('/')[1]) || 0;
+        const eta = res.headers.get('etag') || res.headers.get('last-modified') || String(size);
+        try { if (res.body) await res.body.cancel(); } catch { /* 1 byte, comunque ok */ }
+        if (c && !forzato && c.eta && c.eta === eta && c.etaSize === size) {
+          c.at = Date.now();
+          return c.msgs;   // invariato: zero download
+        }
+        const arr = await leggiFile(key);
+        if (arr === null) return c ? c.msgs : null;   // download fallito: meglio la cache che il vuoto
+        if (Array.isArray(arr)) {
+          cacheMsg.set(key, { eta: eta, etaSize: size, msgs: arr, at: Date.now() });
+          salvaMsgsLS(key, arr);
+        }
+        return arr;
+      }
+      if (res.ok) {
+        // il server ha ignorato il Range: il file intero è già arrivato, lo uso così com'è
+        try {
+          const arr = await res.json();
+          if (Array.isArray(arr)) {
+            const eta = res.headers.get('etag') || res.headers.get('last-modified') || String(arr.length);
+            const size = Number(res.headers.get('content-length')) || 0;
+            cacheMsg.set(key, { eta: eta, etaSize: size, msgs: arr, at: Date.now() });
+            salvaMsgsLS(key, arr);
+            return arr;
+          }
+        } catch { /* risposta corrotta: sotto cade nel ramo errori */ }
+      }
+      return c ? c.msgs : null;
+    }
 
     function scriviKeepalive(base, nome, dati) {
       try {
@@ -2621,6 +2690,9 @@
       rimossi = new Set();
       animati = new Set();
       codaInvii = {};
+      cacheMsg.clear();          // niente chat dell'utente precedente in memoria
+      lettureFallite = 0;
+      convAvatarSig = '';
       notificato = {};
       baselineFatta = false;
       bloccati = [];
@@ -2632,6 +2704,7 @@
       clearInterval(timerLista);
       clearInterval(timerMsg);
       timerLista = timerMsg = null;
+      $('chat-list').dataset.sig = '';
       document.title = 'LinkLoopChat';
       $('app-screen').classList.add('hidden');
       $('auth-screen').classList.remove('hidden');
@@ -2641,11 +2714,13 @@
     // ====================== CONTATTI ======================
     async function caricaContatti() {
       const c = await leggiFile(nomeContatti(utenteLoggato.id));
+      if (c === null) return null;   // errore di rete: il chiamante tiene i vecchi contatti
       return Array.isArray(c) ? c : [];
     }
 
     async function caricaVisti() {
       const v = await leggiFile(nomeVisti(utenteLoggato.id));
+      if (v === null) return null;   // errore di rete: il chiamante tiene i vecchi visti
       return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
     }
 
@@ -2672,10 +2747,12 @@
         return;
       }
 
-      const suoi = (await leggiFile(nomeContatti(altro.id))) || [];
-      if (Array.isArray(suoi) && !suoi.includes(utenteLoggato.username)) {
-        suoi.push(utenteLoggato.username);
-        await scriviFile(nomeContatti(altro.id), suoi);
+      const suoiRaw = await leggiFile(nomeContatti(altro.id));
+      // null = lettura fallita: si salta l'aggiornamento piuttosto che rischiare
+      // di sovrascrivere la sua lista contatti con una lista vuota
+      if (Array.isArray(suoiRaw) && !suoiRaw.includes(utenteLoggato.username)) {
+        suoiRaw.push(utenteLoggato.username);
+        await scriviFile(nomeContatti(altro.id), suoiRaw);
       }
 
       contatti = miei;
@@ -2686,7 +2763,16 @@
     }
 
     // ====================== LISTA CHAT ======================
+    let listaInCorso = false;
+    const listaAttesi = [];
     async function refreshLista() {
+      while (listaInCorso) await new Promise(r => listaAttesi.push(r));
+      listaInCorso = true;
+      try { return await refreshListaInterna(); }
+      finally { listaInCorso = false; listaAttesi.splice(0).forEach(r => r()); }
+    }
+
+    async function refreshListaInterna() {
       if (!utenteLoggato) return;
       const [doc, contattiNow, vistiNow, gruppiRaw] = await Promise.all([
         getAccountDoc(),
@@ -2705,8 +2791,14 @@
         }
       }
 
-      contatti = contattiNow;
-      visti = vistiNow;
+      if (Array.isArray(contattiNow)) contatti = contattiNow;   // null = errore di rete: tiene i vecchi
+      if (vistiNow && typeof vistiNow === 'object') {
+        // merge per id crescente: una lettura fallita non deve azzerare i badge
+        for (const k in vistiNow) {
+          const prec = visti[k];
+          if (!prec || (Number(vistiNow[k] && vistiNow[k].id) || 0) > (Number(prec && prec.id) || 0)) visti[k] = vistiNow[k];
+        }
+      }
       gruppi = Array.isArray(gruppiRaw) ? gruppiRaw : [];
       const visibili = contatti.filter(n => trovaAccount(n));
       const mieiGruppi = gruppi.filter(g => g && Array.isArray(g.membri) && g.membri.includes(utenteLoggato.username));
@@ -2718,7 +2810,7 @@
           const altro = trovaAccount(nome);
           if (!altro) return null;
           const key = idChat(utenteLoggato, altro);
-          const msgs = await leggiFile(key);
+          const msgs = await leggiFileChat(key);
           const arr = Array.isArray(msgs) ? msgs : [];
           const last = arr.length ? arr[arr.length - 1] : null;
           const visto = (visti[key] && visti[key].id) || 0;
@@ -2727,7 +2819,7 @@
         })),
         Promise.all(mieiGruppi.map(async (g) => {
           const key = 'g_' + g.id + '.json';
-          const msgs = await leggiFile(key);
+          const msgs = await leggiFileChat(key);
           const arr = Array.isArray(msgs) ? msgs : [];
           const last = arr.length ? arr[arr.length - 1] : null;
           const visto = (visti[key] && visti[key].id) || 0;
@@ -2789,6 +2881,7 @@
       });
 
       if (!filtrati.length) {
+        box.dataset.sig = '';
         box.innerHTML = q
           ? `<div class="list-empty"><strong>Nessun risultato</strong>Nessuna chat corrisponde a "${esc(q)}".</div>`
           : `<div class="list-empty"><strong>Nessuna chat ancora</strong>Aggiungi una persona per iniziare una conversazione privata.
@@ -2796,7 +2889,8 @@
         return;
       }
 
-      box.innerHTML = filtrati.map((c, i) => {
+      const ore = Math.floor(Date.now() / 60000);
+      const righe = filtrati.map(c => {
         const scrivendo = staScrivendo(c.nome);
         const mine = c.last && c.last.from === utenteLoggato.username;
         const eGrup = eGruppo(c.nome);
@@ -2810,10 +2904,23 @@
           else if (eGrup) preview = nomeDi(c.last.from) + ': ' + corpo;
           else preview = corpo;
         }
+        const acc = trovaAccount(c.nome);
+        return { c, scrivendo, preview, online: eOnline(presenze[c.nome]), avatar: (acc && acc.icona_aggiornata_il) || '' };
+      });
+
+      // firma del contenuto: se non cambia niente il DOM resta dov'è (niente rebuild a ogni poll)
+      const sig = q + '§' + ore + '§' + (chatAperta || '') + '§' + righe.map(r =>
+        r.c.nome + '§' + r.c.unread + '§' + r.preview + '§' + r.online + '§' + r.avatar + '§' + oraLista(r.c.last)
+      ).join('¦');
+      if (box.dataset.sig === sig && box.children.length) return;
+      box.dataset.sig = sig;
+
+      box.innerHTML = righe.map((r, i) => {
+        const { c, scrivendo, preview, online } = r;
         const anima = listaAnimata ? 'animation:none' : `animation-delay:${Math.min(i * 35, 300)}ms`;
         return `
           <button class="chat-item ${chatAperta === c.nome ? 'active' : ''}" data-user="${esc(c.nome)}" style="${anima}">
-            ${avatarHTML(c.nome, 'lg', eOnline(presenze[c.nome]))}
+            ${avatarHTML(c.nome, 'lg', online)}
             <span class="chat-item-body">
               <span class="row1">
                 <span class="name">${esc(nomeDi(c.nome))}</span>
@@ -2898,9 +3005,13 @@
       if (box) { box.innerHTML = avatarHTML(utenteLoggato, 'lg'); risolviImmagini(box); }
     }
 
+    let convAvatarSig = '';
     function setConvAvatar() {
       const box = $('conv-avatar');
       if (!box || !chatAperta) return;
+      const sig = chatAperta + '|' + (eOnline(presenze[chatAperta]) ? 'on' : 'off');
+      if (box.innerHTML && sig === convAvatarSig) return;   // niente rigenerazioni ad ogni poll
+      convAvatarSig = sig;
       box.innerHTML = avatarHTML(chatAperta, 'sm', eOnline(presenze[chatAperta]));
       risolviImmagini(box);
     }
@@ -2960,7 +3071,14 @@
       ultimiMsgs = [];
       msgsServerCache = [];
       animati.clear();
-      $('messages').innerHTML = '';
+      const keyApertura = keyDi(nome);
+      const msgCache = keyApertura ? caricaMsgsLS(keyApertura) : null;
+      if (msgCache && msgCache.length) {
+        msgsServerCache = msgCache;
+        renderMessaggi(msgCache, null, keyApertura);   // pittura istantanea dalla cache del dispositivo
+      } else {
+        $('messages').innerHTML = `<div class="in-chat-empty">Caricamento messaggi…</div>`;
+      }
 
       renderLista();
       aggiornaChatAperta(true);
@@ -2988,7 +3106,17 @@
       renderLista();
     }
 
+    let aggInCorso = false;
+    const aggAttesi = [];
+    /* i giri di poll girano in serializzazione: mai due letture concorrenti sulla stessa chat */
     async function aggiornaChatAperta(allaApertura = false) {
+      while (aggInCorso) await new Promise(r => aggAttesi.push(r));
+      aggInCorso = true;
+      try { await aggInterna(allaApertura); }
+      finally { aggInCorso = false; aggAttesi.splice(0).forEach(r => r()); }
+    }
+
+    async function aggInterna(allaApertura = false) {
       if (!utenteLoggato || !chatAperta) return;
       const key = keyDi(chatAperta);
       if (!key) return;
@@ -3001,7 +3129,7 @@
 
       if (!eGrup) {
         [msgs, vistiAltro, presenzaAltro, typingAltro, evBurst] = await Promise.all([
-          leggiFile(key),
+          leggiFileChat(key),
           leggiFile(nomeVisti(accAltro.id)),
           leggiFile(nomePresenza(accAltro.id)),
           leggiFile(nomeTyping(accAltro.id)),
@@ -3015,7 +3143,7 @@
           .filter(m => m !== utenteLoggato.username).slice(0, 8);
         let tGruppo = [];
         [msgs, tGruppo, evBurst] = await Promise.all([
-          leggiFile(key),
+          leggiFileChat(key),
           Promise.all(altri.map(m => {
             const a = trovaAccount(m);
             return a ? leggiFile(nomeTyping(a.id)) : Promise.resolve(null);
@@ -3026,6 +3154,14 @@
           t && t.chat === key && (Date.now() - (Date.parse(t.at) || 0)) < 4500);
         typingMap[chatAperta] = attivo || null;
       }
+
+      if (msgs === null) {
+        // lettura fallita: NON svuoto la chat, aspetto il prossimo giro
+        lettureFallite++;
+        if (lettureFallite === 3) toast('Connessione instabile: provo a recuperare…', 'errore');
+        return;
+      }
+      if (lettureFallite) lettureFallite = 0;
 
       aggiornaSubPresenza(chatAperta);
       setConvAvatar();
@@ -3038,7 +3174,8 @@
       const mio = visti[key];
 
       msgsServerCache = arr;
-      vistiAltroCache = (vistiAltro && typeof vistiAltro === 'object') ? vistiAltro : null;
+      if (typeof vistiAltro === 'object' && vistiAltro) vistiAltroCache = vistiAltro;
+      else if (vistiAltro === undefined) vistiAltroCache = null;   // null = errore di rete: tiene la cache
 
       if (allaApertura || !mio || maxId > (mio.id || 0)) {
         visti[key] = { id: maxId, at: new Date().toISOString() };
@@ -3268,18 +3405,67 @@
       return p;
     }
 
-    async function unisciEScrivi(key, muta, tentativi = 3) {
+    async function unisciEScrivi(key, muta, tentativi = 4) {
       for (let i = 1; i <= tentativi; i++) {
         try {
           const raw = await leggiFile(key);
-          const arr = Array.isArray(raw) ? raw.slice() : [];
+          // se la LETTURA è fallita non si scrive MAI: altrimenti una buca di rete
+          // sovrascriverebbe la conversazione intera col solo messaggio nuovo
+          if (raw === null) throw new Error('lettura fallita');
+          const arr = Array.isArray(raw) ? raw.slice() : [];   // undefined = file inesistente: si crea
           const out = muta(arr);
           const finale = Array.isArray(out) ? out : arr;
           if (await scriviFile(key, finale)) return true;
         } catch { /* riprovo */ }
-        await new Promise(r => setTimeout(r, 600 * i));
+        await new Promise(r => setTimeout(r, 700 * i));
       }
       return false;
+    }
+
+    // ---------- OUTBOX: il messaggio resta sul dispositivo finché il server non conferma ----------
+    const OUTBOX_KS = 'linkloop_outbox';
+    function outboxSalva() {
+      try { localStorage.setItem(OUTBOX_KS, JSON.stringify(pending)); } catch { /* quota */ }
+    }
+
+    /* al login ripristina i messaggi non ancora confermati e riparte l'invio */
+    function caricaOutbox() {
+      if (!utenteLoggato) return;
+      let arr = null;
+      try { arr = JSON.parse(localStorage.getItem(OUTBOX_KS) || 'null'); } catch { arr = null; }
+      if (!Array.isArray(arr)) return;
+      let n = 0;
+      for (const m of arr) {
+        if (!m || !m.id || !m.chat || Number(m.fromId) !== Number(utenteLoggato.id)) continue;
+        if (pending.some(p => String(p.id) === String(m.id))) continue;
+        if (rimossi.has(Number(m.id))) continue;
+        if (m._state === 'upload') { m._state = 'failed'; delete m._upload; }  // upload interrotto: tiene il testo
+        m._state = 'sending';
+        pending.push(m); n++;
+      }
+      if (!n) return;
+      outboxSalva();
+      renderChatLocale();
+      pending.slice().forEach((m, i) => {
+        if (m._state !== 'sending') return;
+        setTimeout(() => {
+          if (utenteLoggato && m._state === 'sending') spedisce(m, m.chat, 0, true);
+        }, 400 + i * 900);
+      });
+    }
+
+    /* riprova periodico dei messaggi falliti: restano in outbox finché non passano */
+    function provaOutbox() {
+      if (!utenteLoggato) return;
+      pending.filter(m => m._state === 'failed' && m.chat).forEach((m, i) => {
+        setTimeout(() => {
+          if (!utenteLoggato || m._state !== 'failed') return;
+          m._state = 'sending';
+          outboxSalva();
+          renderChatLocale();
+          spedisce(m, m.chat, 0, true);
+        }, i * 1200);
+      });
     }
 
     function invia(testo, media, extra) {
@@ -3302,6 +3488,7 @@
       if (extra && extra.fwd) msg.fwd = extra.fwd;
 
       pending.push(msg);
+      outboxSalva();   // salvato subito sul dispositivo
       rispostaA = null;
       mostraReplyBar();
       renderChatLocale();
@@ -3315,7 +3502,7 @@
       return true;
     }
 
-    async function spedisce(msg, key, tentativo) {
+    async function spedisce(msg, key, tentativo, silenzioso) {
       const ok = await enqueue(key, () => unisciEScrivi(key, arr => {
         if (!arr.some(m => m.id === msg.id)) arr.push(pulisciPending(msg));
         return arr;
@@ -3325,15 +3512,17 @@
         await aggiornaChatAperta();
         const i = pending.indexOf(msg);
         if (i >= 0) pending.splice(i, 1);
+        outboxSalva();   // confermato dal server: esce dal dispositivo
         renderChatLocale();
         return;
       }
-      if (tentativo < 3) {
-        setTimeout(() => spedisce(msg, key, tentativo + 1), 900 * (tentativo + 1));
+      if (tentativo < 4) {
+        setTimeout(() => spedisce(msg, key, tentativo + 1, silenzioso), 1200 * (tentativo + 1));
       } else {
         msg._state = 'failed';
+        outboxSalva();   // resta salvato qui: il ripristino automatico ci riprova
         renderChatLocale();
-        toast('Invio fallito: tocca ⚠ per riprovare', 'errore');
+        if (!silenzioso) toast('Invio fallito: riprovo in automatico, o tocca ⚠', 'errore');
       }
     }
 
@@ -3341,6 +3530,7 @@
       const msg = pending.find(p => String(p.id) === String(id));
       if (!msg) return;
       msg._state = 'sending';
+      outboxSalva();
       renderChatLocale();
       spedisce(msg, msg.chat, 0);
     }
@@ -3431,11 +3621,21 @@
           const xhr = new XMLHttpRequest();
           xhr.open('POST', `${API_BASE}/upload`);
           Object.keys(NGROK_HEADERS).forEach(k => xhr.setRequestHeader(k, NGROK_HEADERS[k]));
-          xhr.timeout = 90000;
+          xhr.timeout = 0;   // nessun limite di tempo: anche grande e lento va bene, resta in background
+          let ultimoProg = Date.now();
+          // se per 2 minuti non avanza più (connessione morta) lo interrompo: si riprova
+          const occhiello = setInterval(() => {
+            if (Date.now() - ultimoProg > 120000) { try { xhr.abort(); } catch { /* ok */ } }
+          }, 4000);
+          const chiudi = () => clearInterval(occhiello);
           xhr.upload.onprogress = (ev) => {
-            if (ev.lengthComputable && onProgress) onProgress(Math.round(ev.loaded / ev.total * 100));
+            if (ev.lengthComputable) {
+              ultimoProg = Date.now();
+              if (onProgress) onProgress(Math.round(ev.loaded / ev.total * 100));
+            }
           };
           xhr.onload = () => {
+            chiudi();
             if (xhr.status < 200 || xhr.status >= 300) { resolve(null); return; }
             let nomeFinale = nome;
             try {
@@ -3451,8 +3651,9 @@
               mime: file.type
             });
           };
-          xhr.onerror = () => resolve(null);
-          xhr.ontimeout = () => resolve(null);
+          xhr.onerror = () => { chiudi(); resolve(null); };
+          xhr.ontimeout = () => { chiudi(); resolve(null); };
+          xhr.onabort = () => { chiudi(); resolve(null); };
           xhr.send(fd);
         } catch { resolve(null); }
       });
@@ -3477,10 +3678,7 @@
       if (!scritturaConsentita()) return;
       if (inUpload) { toast('Attendi il caricamento in corso…', 'errore'); return; }
 
-      const validi = arr.filter(f => {
-        if (f.size > 25 * 1024 * 1024) { toast(`${f.name}: file troppo grande (max 25 MB)`, 'errore'); return false; }
-        return true;
-      });
+      const validi = arr;   // nessun limite di dimensione: carica piano piano, in background
       if (!validi.length) return;
 
       const key = chiaveChatAperta();
@@ -3501,6 +3699,7 @@
       };
       if (rispostaA && rispostaA.id) placeholder.reply = { id: rispostaA.id, from: rispostaA.from, text: rispostaA.text };
       pending.push(placeholder);
+      outboxSalva();   // il testo è al salvo anche se la pagina si chiude a metà upload
       rispostaA = null;
       mostraReplyBar();
       renderChatLocale();
@@ -3512,7 +3711,8 @@
         const f = validi[i];
         placeholder._upload = { nome: f.name, tot: validi.length, pct: 0, idx: i + 1 };
         aggiornaBarraUpload(placeholder);
-        const m = await uploadFile(f, pct => { placeholder._upload.pct = pct; aggiornaBarraUpload(placeholder); });
+        let m = await uploadFile(f, pct => { placeholder._upload.pct = pct; aggiornaBarraUpload(placeholder); });
+        if (!m) m = await uploadFile(f, pct => { placeholder._upload.pct = pct; aggiornaBarraUpload(placeholder); });   // secondo tentativo
         if (m) media.push(m);
         else falliti++;
       }
@@ -3520,6 +3720,7 @@
 
       const idx = pending.indexOf(placeholder);
       if (idx >= 0) pending.splice(idx, 1);
+      outboxSalva();
 
       if (!media.length) {
         renderChatLocale();
@@ -3532,6 +3733,7 @@
       const msg = Object.assign({}, placeholder, { media: media, _state: 'sending' });
       delete msg._upload;
       pending.push(msg);
+      outboxSalva();
       renderChatLocale();
       spedisce(msg, key, 0);
 
@@ -3570,7 +3772,7 @@
       if (!utenteLoggato) return;
       if (!file) return;
       if (!file.type.startsWith('image/')) { toast('Seleziona un file immagine', 'errore'); return; }
-      if (file.size > 8 * 1024 * 1024) { toast('Immagine troppo grande (max 8 MB)', 'errore'); return; }
+      if (file.size > 64 * 1024 * 1024) { toast('Immagine troppo grande (max 64 MB)', 'errore'); return; }
 
       toastLoading('Caricamento foto profilo…');
       try {
@@ -3891,6 +4093,7 @@
       if (patch[numId]) delete patch[numId];
       if (m._state === 'sending' || m._state === 'failed') {
         pending = pending.filter(p => p.id !== numId);
+        outboxSalva();
       }
       renderChatLocale();
       const key = chiaveChatAperta();
@@ -4304,10 +4507,13 @@
       const key = chiaveChatAperta();
       if (!key) return;
       pending = pending.filter(p => p.chat !== key);
+      outboxSalva();
       msgsServerCache = [];
       ultimoSig = '';
       const done = await enqueue(key, () => unisciEScrivi(key, () => []));
       if (done) {
+        cacheMsg.delete(key);
+        salvaMsgsLS(key, []);   // niente messaggi vecchi se riapro la chat
         toast('Conversazione cancellata');
         await refreshLista();
         aggiornaChatAperta(true);
@@ -4543,13 +4749,38 @@
       baselineFatta = false;
       notificato = {};
       await refreshLista();
+      caricaOutbox();   // riprende i messaggi rimasti a metà sul dispositivo
 
-      timerLista = setInterval(refreshLista, 6000);
-      timerMsg = setInterval(() => aggiornaChatAperta(), 2500);
+      let ultGiroL = 0, ultGiroM = 0;
+      timerLista = setInterval(() => {
+        if (!utenteLoggato) return;
+        if (document.hidden) { const n = Date.now(); if (n - ultGiroL < 12000) return; ultGiroL = n; }
+        if (listaInCorso) return;   // il giro precedente è ancora in ballo: non accavalliamo
+        refreshLista().catch(() => {});
+      }, 6000);
+      timerMsg = setInterval(() => {
+        if (!utenteLoggato || !chatAperta) return;
+        if (document.hidden) { const n = Date.now(); if (n - ultGiroM < 8000) return; ultGiroM = n; }
+        if (aggInCorso) return;
+        aggiornaChatAperta().catch(() => {});
+      }, 2500);
     }
 
     document.addEventListener('DOMContentLoaded', () => {
       initEmoji();
+
+      // stabilità: rete tornata / scheda di nuovo visibile → aggiorno subito
+      if (!window.__outboxTimer) window.__outboxTimer = setInterval(provaOutbox, 45000);
+      window.addEventListener('online', () => {
+        provaOutbox();
+        if (utenteLoggato) refreshLista().catch(() => {});
+      });
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && utenteLoggato) {
+          refreshLista().catch(() => {});
+          if (chatAperta) aggiornaChatAperta().catch(() => {});
+        }
+      });
 
       renderAvatarMio();
 
